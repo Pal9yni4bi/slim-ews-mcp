@@ -154,7 +154,9 @@ claude mcp add ews-mail -- /path/to/slim-ews-mcp/.venv/bin/python /path/to/slim-
 
 ## Verifying the setup
 
-1. **Config check:** run `python src/main.py` from the project root. With a
+1. **Config check:** from the project root run `.venv\Scripts\python.exe
+   src\main.py` (Windows) or `.venv/bin/python src/main.py` (Linux/macOS) —
+   the system `python` won't do, the dependencies live in the venv. With a
    bad/missing `.env` it exits immediately with a readable message; with a
    good one it starts silently and waits on stdin (Ctrl+C to stop).
 2. **Reading works:** in Claude, ask *"list my 5 latest unread emails"* —

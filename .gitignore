@@ -1,5 +1,7 @@
-# Secrets and local environment
+# Secrets and local environment (.env plus any backup/variant copies)
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
