@@ -10,6 +10,9 @@ __pycache__/
 .venv/
 venv/
 
+# Packed MCP bundles (contain machine-specific absolute paths)
+*.mcpb
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

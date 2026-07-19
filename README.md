@@ -117,7 +117,7 @@ bundle instead.
 
 ## Hooking up to Claude
 
-### Claude Desktop
+### Claude Desktop (classic versions)
 
 Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
 `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
@@ -137,6 +137,39 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
 On Linux/macOS use `.venv/bin/python` as the command. Credentials are read
 from `.env` in the project root, so they don't need to appear in the Claude
 config. Restart Claude Desktop after editing.
+
+### Claude Desktop (new unified app, 2025+)
+
+The unified Claude Desktop ignores `mcpServers` in
+`claude_desktop_config.json` (it strips the key on restart). Local stdio
+servers are installed as **MCPB extension bundles** instead. A bundle is
+just a zip containing one `manifest.json`:
+
+```json
+{
+  "manifest_version": "0.2",
+  "dxt_version": "0.1",
+  "name": "ews-mail",
+  "display_name": "EWS Mail",
+  "version": "0.1.0",
+  "description": "Safe EWS mail tools for Claude.",
+  "author": { "name": "you" },
+  "server": {
+    "type": "binary",
+    "entry_point": "run",
+    "mcp_config": {
+      "command": "C:\\path\\to\\slim-ews-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\path\\to\\slim-ews-mcp\\src\\main.py"],
+      "env": { "PYTHONUTF8": "1" }
+    }
+  }
+}
+```
+
+Zip the `manifest.json` (it must sit at the zip root), rename the archive to
+`ews-mail.mcpb`, then in Claude Desktop open **Settings → Extensions** and
+install the file (button or drag-and-drop). The absolute paths make the
+bundle machine-specific — rebuild it per machine.
 
 ### Claude Code
 
