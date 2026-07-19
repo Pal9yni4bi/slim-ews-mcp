@@ -147,8 +147,7 @@ just a zip containing one `manifest.json`:
 
 ```json
 {
-  "manifest_version": "0.2",
-  "dxt_version": "0.1",
+  "dxt_version": "0.2",
   "name": "ews-mail",
   "display_name": "EWS Mail",
   "version": "0.1.0",
