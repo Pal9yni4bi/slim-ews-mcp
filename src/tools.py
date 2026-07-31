@@ -6,12 +6,20 @@ Safety invariants, enforced in code (not configurable):
   move/delete code is unreachable unless confirm=True is passed explicitly.
 - delete is always a soft delete (move to Deleted Items), never a hard delete.
 - logs contain operation metadata only - never bodies, subjects or credentials.
+
+EWS_MODE narrows what the server can do at all (see config.VALID_MODES):
+"draft" replaces every send with saving to Drafts, "read" registers only the
+read-only tools. Both are client-side restrictions - they bound what this
+server (and the model driving it) can do, not what the credentials allow.
+For a boundary the mailbox owner cannot cross, restrict the account
+server-side instead (see README).
 """
 
 from __future__ import annotations
 
 import functools
 import html as html_escape
+import inspect
 import logging
 import re
 from itertools import islice
@@ -47,8 +55,45 @@ PREVIEW_NOTE = (
     "with the same arguments plus confirm=true."
 )
 
+DRAFT_MODE_NOTE = (
+    "DRAFT MODE (EWS_MODE=draft): this server cannot send mail at all. "
+    "confirm=true saves the message as a draft in the Drafts folder; the "
+    "user reviews and sends it from their own mail client. Say so explicitly "
+    "instead of telling the user the message was sent."
+)
+
 _LIST_FIELDS = ("id", "datetime_received", "sender", "subject", "is_read",
                 "has_attachments", "text_body")
+
+
+def _sending_disabled() -> bool:
+    """True when the configured mode forbids putting mail on the wire."""
+    return load_config().mode != "full"
+
+
+def _require_writable() -> None:
+    """Guard for mutating tools. In read mode they are not even registered;
+    this is the second line of defence in case one is called anyway."""
+    if load_config().mode == "read":
+        raise ToolError("This server runs in read-only mode (EWS_MODE=read).")
+
+
+def _save_as_draft(draft, action: str, message_id: str) -> dict:
+    """Save a prepared reply/forward to Drafts instead of sending it."""
+    account = get_account()
+    saved = draft.save(account.drafts)
+    draft_id = getattr(saved, "id", None)
+    logger.info("%s saved as draft for id=%s", action, message_id[-16:])
+    return {
+        "status": "draft_saved",
+        "action": action,
+        "draft_id": draft_id,
+        "folder": account.drafts.name,
+        "detail": (
+            "Nothing was sent. The message is waiting in Drafts - the user "
+            "must review and send it from their mail client."
+        ),
+    }
 
 
 def _tool_guard(fn):
@@ -285,6 +330,7 @@ def reply_email(message_id: str, body: str, reply_all: bool = False,
         reply_all: Reply to all recipients instead of only the sender.
         confirm: Must be true to actually send. Default false = preview only.
     """
+    _require_writable()
     if not body or not body.strip():
         raise ToolError("Reply body is empty.")
     item = get_message_by_id(message_id, require_message=True)
@@ -296,12 +342,13 @@ def reply_email(message_id: str, body: str, reply_all: bool = False,
         return {
             "status": "preview",
             "action": action,
+            "on_confirm": "save_draft" if _sending_disabled() else "send",
             "original": _message_brief(item),
             "to": to,
             "cc": cc,
             "subject": subject,
             "body": body,
-            "note": PREVIEW_NOTE,
+            "note": DRAFT_MODE_NOTE if _sending_disabled() else PREVIEW_NOTE,
         }
 
     # --- past the confirmation gate: the only code path that can send ---
@@ -310,6 +357,10 @@ def reply_email(message_id: str, body: str, reply_all: bool = False,
         draft = item.create_reply_all(subject, html_body)
     else:
         draft = item.create_reply(subject, html_body)
+
+    if _sending_disabled():
+        return {**_save_as_draft(draft, action, message_id), "to": to, "cc": cc,
+                "subject": subject}
     draft.send()
 
     logger.info("%s sent for id=%s", action, message_id[-16:])
@@ -333,6 +384,7 @@ def forward_email(message_id: str, to: str | list[str], body: str = "",
         body: Optional comment placed above the forwarded message.
         confirm: Must be true to actually send. Default false = preview only.
     """
+    _require_writable()
     recipients = _parse_recipients(to)
     item = get_message_by_id(message_id, require_message=True)
     subject = _prefixed_subject(item.subject, ("fw", "fwd", "пересл"), "Fw: ")
@@ -341,17 +393,22 @@ def forward_email(message_id: str, to: str | list[str], body: str = "",
         return {
             "status": "preview",
             "action": "forward",
+            "on_confirm": "save_draft" if _sending_disabled() else "send",
             "original": _message_brief(item),
             "to": recipients,
             "subject": subject,
             "body": body,
             "attachments_included": bool(item.has_attachments),
-            "note": PREVIEW_NOTE,
+            "note": DRAFT_MODE_NOTE if _sending_disabled() else PREVIEW_NOTE,
         }
 
     # --- past the confirmation gate: the only code path that can send ---
     html_body = HTMLBody(_text_to_html(body)) if body else HTMLBody("")
     draft = item.create_forward(subject, html_body, to_recipients=recipients)
+
+    if _sending_disabled():
+        return {**_save_as_draft(draft, "forward", message_id), "to": recipients,
+                "subject": subject}
     draft.send()
 
     logger.info("forward sent for id=%s recipients=%d", message_id[-16:], len(recipients))
@@ -373,6 +430,7 @@ def move_message(message_id: str, target_folder: str, confirm: bool = False) -> 
             or a folder id from list_folders.
         confirm: Must be true to actually move. Default false = preview only.
     """
+    _require_writable()
     item = get_message_by_id(message_id)
     target = resolve_folder(target_folder)
 
@@ -407,6 +465,7 @@ def delete_message(message_id: str, confirm: bool = False) -> dict:
         message_id: Id of the message to delete.
         confirm: Must be true to actually delete. Default false = preview only.
     """
+    _require_writable()
     item = get_message_by_id(message_id)
 
     if not confirm:
@@ -433,6 +492,7 @@ def mark_read(message_id: str, read: bool = True) -> dict:
         message_id: Id of the message.
         read: True to mark as read, false to mark as unread.
     """
+    _require_writable()
     item = get_message_by_id(message_id)
     item.is_read = read
     item.save(update_fields=["is_read"])
@@ -477,19 +537,26 @@ def list_folders() -> dict:
     return {"folders": roots}
 
 
-ALL_TOOLS = (
-    list_messages,
-    get_message,
-    reply_email,
-    forward_email,
-    move_message,
-    delete_message,
-    mark_read,
-    list_folders,
-)
+READ_TOOLS = (list_messages, get_message, list_folders)
+WRITE_TOOLS = (mark_read, move_message, delete_message)
+SEND_TOOLS = (reply_email, forward_email)
+ALL_TOOLS = READ_TOOLS + WRITE_TOOLS + SEND_TOOLS
+
+
+def tools_for_mode(mode: str) -> tuple:
+    """Tools exposed in a given mode. In read mode the mutating tools are
+    never registered, so the model cannot even attempt them."""
+    if mode == "read":
+        return READ_TOOLS
+    return ALL_TOOLS
 
 
 def register(mcp) -> None:
-    """Register all tools on a FastMCP server instance."""
-    for tool in ALL_TOOLS:
-        mcp.tool()(tool)
+    """Register the tools allowed by the configured mode."""
+    mode = load_config().mode
+    for tool in tools_for_mode(mode):
+        description = inspect.cleandoc(tool.__doc__ or "")
+        if mode == "draft" and tool in SEND_TOOLS:
+            description = f"{description}\n\n{DRAFT_MODE_NOTE}"
+        mcp.tool(description=description)(tool)
+    logger.info("mode=%s tools=%d", mode, len(tools_for_mode(mode)))

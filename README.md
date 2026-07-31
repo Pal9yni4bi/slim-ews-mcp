@@ -15,6 +15,11 @@ economy are prioritized over feature completeness.
 
 ## Safety model
 
+- **Capability modes.** `EWS_MODE` bounds what the server can do at all:
+  `full` (default), `draft` (reply/forward save to Drafts — the server cannot
+  send anything), `read` (read-only; mutating tools are not even registered,
+  so the model never sees them). See
+  [Restricting what the server can do](#restricting-what-the-server-can-do).
 - **Two-step confirmation, enforced in code.** `reply_email`, `forward_email`,
   `move_message` and `delete_message` do nothing when called with
   `confirm=false` (the default) — they return a preview (recipients, subject,
@@ -88,11 +93,75 @@ environment variables take precedence over the file.
 | `EWS_PASSWORD` | yes | Password |
 | `EWS_AUTH_TYPE` | no | `basic` / `ntlm` / `digest` / `gssapi` / `sspi`; empty = autodetect |
 | `EWS_ACCESS_TYPE` | no | `delegate` (default) or `impersonation` |
+| `EWS_MODE` | no | `full` (default), `draft` (never sends — saves to Drafts) or `read` (read-only) |
 | `EWS_INSECURE_TLS` | no | **Dangerous.** `true` disables TLS verification — see below |
 | `EWS_TIMEOUT` | no | HTTP timeout in seconds (default 30) |
 | `EWS_MAX_LIST_LIMIT` | no | Hard cap for `list_messages` limit (default 100) |
 
 \* not required when `EWS_AUTODISCOVER=true`.
+
+### Restricting what the server can do
+
+There are two independent layers, and they defend against different things.
+
+**1. Client-side: `EWS_MODE`.** This bounds the server and the model driving
+it — useful when you want Claude to draft replies for you but never to put
+mail on the wire.
+
+| Mode | Tools registered | Reply / forward with `confirm=true` |
+|---|---|---|
+| `full` (default) | all 8 | sends the message |
+| `draft` | all 8 | saves to Drafts; **nothing is ever sent** |
+| `read` | `list_messages`, `get_message`, `list_folders` | tool not registered |
+
+In `draft` mode the send call is replaced by `save()` into the Drafts folder,
+and the tool descriptions tell the model to report a saved draft rather than a
+sent message. You review the draft in Outlook/OWA and press Send yourself.
+`read` mode goes further: the mutating tools are never registered, so they do
+not exist as far as the model is concerned (and a direct call is rejected
+too).
+
+**2. Server-side: Exchange permissions.** `EWS_MODE` is enforced by this
+process. It does not restrict the *credentials* — anything holding them can
+still send by other means. EWS has no per-operation ACL: a mailbox owner
+authenticating as themselves can always send as themselves, and no EWS or
+`Set-CASMailbox` setting changes that (`EWSEnabled` / `EWSAllowList` control
+*which applications* may use EWS, not which operations they may perform).
+
+To make "cannot send" a boundary the process cannot cross, connect as a
+**separate service account** that has been granted access to the mailbox but
+**not** the right to send as it. On on-prem Exchange:
+
+```powershell
+# read + create drafts in the target mailbox
+Add-MailboxPermission -Identity user@example.com -User svc-claude `
+  -AccessRights FullAccess -InheritanceType All
+
+# deliberately NOT granted:
+#   Add-ADPermission ... -ExtendedRights "Send As"
+#   Set-Mailbox user@example.com -GrantSendOnBehalfTo svc-claude
+```
+
+Then point the server at the mailbox while authenticating as the service
+account:
+
+```
+EWS_EMAIL=user@example.com
+EWS_USERNAME=CORP\svc-claude
+EWS_PASSWORD=...
+EWS_ACCESS_TYPE=delegate
+EWS_MODE=draft
+```
+
+`FullAccess` does not imply `SendAs` — reading and saving drafts work, while
+any send attempt is refused by Exchange itself (`ErrorSendAsDenied` /
+access denied), regardless of what the client asks for. For a stricter,
+folder-level variant use `Add-MailboxFolderPermission` (e.g. `Reviewer` on
+`:\Inbox`, `Editor` on `:\Drafts`) instead of `FullAccess`.
+
+Note that `EWS_ACCESS_TYPE=delegate` by itself grants nothing and restricts
+nothing — it only tells Exchange how to interpret the connection. The actual
+permissions come from the cmdlets above.
 
 ### TLS and internal CAs
 

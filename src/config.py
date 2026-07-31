@@ -22,6 +22,13 @@ load_dotenv(PROJECT_ROOT / ".env")
 VALID_AUTH_TYPES = ("basic", "ntlm", "digest", "gssapi", "sspi")
 VALID_ACCESS_TYPES = ("delegate", "impersonation")
 
+# Capability modes, from most to least permissive:
+#   full  - all tools; reply/forward send after confirmation
+#   draft - reply/forward save to Drafts instead of sending; nothing ever leaves
+#           the mailbox through this server
+#   read  - read-only tools only; no mutating tools are registered at all
+VALID_MODES = ("full", "draft", "read")
+
 
 class ConfigError(Exception):
     """Raised when the environment configuration is missing or invalid."""
@@ -60,6 +67,7 @@ class Config:
     password: str
     auth_type: str | None  # None = let exchangelib autodetect
     access_type: str
+    mode: str
     insecure_tls: bool
     timeout: int
     max_list_limit: int
@@ -75,6 +83,7 @@ def load_config() -> Config:
     password = _get_str("EWS_PASSWORD")
     auth_type = _get_str("EWS_AUTH_TYPE").lower() or None
     access_type = _get_str("EWS_ACCESS_TYPE").lower() or "delegate"
+    mode = _get_str("EWS_MODE").lower() or "full"
 
     problems = []
     if not email or "@" not in email:
@@ -89,6 +98,8 @@ def load_config() -> Config:
         problems.append(f"EWS_AUTH_TYPE must be one of {', '.join(VALID_AUTH_TYPES)} (or empty for autodetect)")
     if access_type not in VALID_ACCESS_TYPES:
         problems.append(f"EWS_ACCESS_TYPE must be one of {', '.join(VALID_ACCESS_TYPES)}")
+    if mode not in VALID_MODES:
+        problems.append(f"EWS_MODE must be one of {', '.join(VALID_MODES)}")
     if problems:
         raise ConfigError(
             "Invalid configuration:\n  - " + "\n  - ".join(problems)
@@ -103,6 +114,7 @@ def load_config() -> Config:
         password=password,
         auth_type=auth_type,
         access_type=access_type,
+        mode=mode,
         insecure_tls=_get_bool("EWS_INSECURE_TLS"),
         timeout=_get_int("EWS_TIMEOUT", default=30, min_value=1, max_value=600),
         max_list_limit=_get_int("EWS_MAX_LIST_LIMIT", default=100, min_value=1, max_value=1000),
