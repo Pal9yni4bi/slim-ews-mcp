@@ -134,9 +134,28 @@ def _format_dt(dt) -> str:
     return dt.isoformat(timespec="minutes")
 
 
+_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+
 def _text_to_html(text: str) -> str:
-    """Escape plain text and preserve line breaks for an HTML mail body."""
-    return html_escape.escape(text).replace("\n", "<br>\n")
+    """Escape plain text and preserve line breaks for an HTML mail body.
+
+    Bare http(s) URLs are wrapped in <a> so they arrive clickable. The body
+    goes out as HTML, and there a plain URL is only a text node - clients
+    autolink bare URLs in text/plain bodies, never in HTML ones.
+    """
+    parts: list[str] = []
+    pos = 0
+    for match in _URL_RE.finditer(text):
+        parts.append(html_escape.escape(text[pos:match.start()]))
+        # Trailing punctuation belongs to the sentence, not to the URL.
+        url = match.group().rstrip(".,;:!?)")
+        escaped = html_escape.escape(url)
+        parts.append(f'<a href="{escaped}">{escaped}</a>')
+        parts.append(html_escape.escape(text[match.start() + len(url):match.end()]))
+        pos = match.end()
+    parts.append(html_escape.escape(text[pos:]))
+    return "".join(parts).replace("\n", "<br>\n")
 
 
 def _prefixed_subject(subject: str | None, prefixes: tuple[str, ...], prefix: str) -> str:
